@@ -6,6 +6,7 @@ use curve25519_dalek::{
     traits::IsIdentity,
 };
 use sha2::{Digest, Sha512};
+use pkcs8::{AlgorithmIdentifier, FromPublicKey, ObjectIdentifier, PublicKeyDocument, SubjectPublicKeyInfo, ToPublicKey};
 
 use crate::{Error, Signature};
 
@@ -14,7 +15,7 @@ use crate::{Error, Signature};
 ///
 /// This is useful for representing an encoded verification key, while the
 /// [`VerificationKey`] type in this library caches other decoded state used in
-/// signature verification.  
+/// signature verification.
 ///
 /// A `VerificationKeyBytes` can be used to verify a single signature using the
 /// following idiom:
@@ -69,6 +70,28 @@ impl From<[u8; 32]> for VerificationKeyBytes {
 impl From<VerificationKeyBytes> for [u8; 32] {
     fn from(refined: VerificationKeyBytes) -> [u8; 32] {
         refined.0
+    }
+}
+
+impl<'a> From<SubjectPublicKeyInfo<'a>> for VerificationKeyBytes {
+    fn from(spki: SubjectPublicKeyInfo) -> VerificationKeyBytes {
+        VerificationKeyBytes(spki.subject_public_key.try_into().expect("Ed25519 SubjectPublicKeyInfo doesn't return 32 bytes"))
+    }
+}
+
+#[cfg(feature = "pem")]
+impl From<PublicKeyDocument> for VerificationKeyBytes {
+    fn from(doc: PublicKeyDocument) -> VerificationKeyBytes {
+        let spki = doc.unwrap();
+        VerificationKeyBytes(spki.subject_public_key.try_into().expect("Ed25519 SubjectPublicKeyInfo doesn't return 32 bytes"))
+    }
+}
+
+#[cfg(feature = "pem")]
+impl From<VerificationKeyBytes> for PublicKeyDocument {
+    fn from(bytes: VerificationKeyBytes) -> Result<PublicKeyDocument, Error> {
+        let spki = SubjectPublicKeyInfo::try_from(bytes.0).unwrap();
+        PublicKeyDocument::try_from(spki)
     }
 }
 
@@ -145,6 +168,33 @@ impl TryFrom<[u8; 32]> for VerificationKey {
     type Error = Error;
     fn try_from(bytes: [u8; 32]) -> Result<Self, Self::Error> {
         VerificationKeyBytes::from(bytes).try_into()
+    }
+}
+
+impl ToPublicKey for VerificationKey {
+    fn to_public_key_der(&self) -> PublicKeyDocument {
+        let alg_info = AlgorithmIdentifier {
+            oid: ObjectIdentifier::new("1.3.101.112"), // RFC 8410
+            parameters: None,
+        };
+
+        let spki = SubjectPublicKeyInfo {
+            algorithm: alg_info,
+            subject_public_key: &self.A_bytes.0[..],
+        };
+        PublicKeyDocument::try_from(spki).unwrap()
+    }
+}
+
+impl FromPublicKey for VerificationKey {
+    fn from_spki(spki: SubjectPublicKeyInfo<'_>) -> Result<Self, pkcs8::Error> {
+        let vk = VerificationKey::try_from(spki.subject_public_key);
+        if vk.is_ok() {
+            Ok(vk.unwrap())
+        }
+        else {
+            Err(pkcs8::Error::Decode)
+        }
     }
 }
 
